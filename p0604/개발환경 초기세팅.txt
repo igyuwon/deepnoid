@@ -1,0 +1,34 @@
+* 개발 환경 초기 세팅
+1. Anaconda, VS Code, IDE 설치
+2. 환경 변수 확인 -> 사용자/!!!!!!시스템!!!!!!! path
+	# anaconda 설치 폴더 (기본값) c:\Users\anaconda3
+	# vscode 설치 폴더
+
+3. 가상환경 생성
+	*anaconda prompt 실행
+		(base) ~~~>pip install ipykernel jupyter
+		### 가상환경 생성
+		(base) ~~~>conda create -n (가상환경 이름) (라이브러리 python ~~)
+		### kernel 생성
+		(base) ~~~>python -m ipykernel install --user --name (가상환경 이름) --display-name (보여지는 이름)
+		### kernel 생성 확인
+		(base) ~~~>jupyter kernelspec list
+
+4. VS Code 설정
+	*VS Code 실행
+	(ipynb 확장자 파일을 작성하는 경우)
+	1. ctrl+shift+p(팔레트 실행) > jupyter: select interpreter to start jupyter server 선택 > 가상환경 선택
+	2. Terminal 기본값 변경
+		ctrl+` > +버튼 -> select default profile -> Command Prompt 선택
+	3. notebook이 열린 가정
+		kernel 선택 > select another kernel > jupyter kernel > 가상환경 kernel
+					        > python environment > 가상환경 선택
+
+
+
+
+
+
+
+
+
