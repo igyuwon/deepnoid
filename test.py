@@ -1,220 +1,236 @@
-import matplotlib.pyplot as plt
-import numpy as np
 import os
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-import torchvision.models as models
-import math
+from glob import glob
+from tqdm.notebook import tqdm_notebook as tqdm
+import pandas as pd
+import seaborn as sns
+import xmltodict as xmd
 import cv2
-
-path = 'C:/dataset'
-categories = ['train', 'test', 'val', 'auto_test'] # 전처리된 데이터셋을 훈련용, 평가용, 검증용으로 구분
-data_dir = path+'/osteoarthritis/'
-# device = torch.device('mps:0' if torch.backends.mps.is_available() else 'cpu') # Mac OS
-device = torch.device( 'cuda' if torch.cuda.is_available() else 'cpu' )
-
-def resize_image(img,size=(128,128)):
-    return cv2.resize(img,size)
-
-def he_img(img):
-    return cv2.equalizeHist(img)
-
-def clahe_image(img):
-    clahe = cv2.createCLAHE(clipLimit=2.,tileGridSize=(8,8))
-    cl_img = clahe.apply(img)
-    return cl_img
-
-def denoise_img(img):
-    return cv2.fastNlMeansDenoising(img,None,30,7,21)
-
-def normalize_img(img):
-    return cv2.normalize(img,None,0,255,cv2.NORM_MINMAX)
-
-def detect_edge(img):
-    return cv2.Canny(img,100,200)
-
-def blur_img(img):
-    return cv2.GaussianBlur(img,(5,5),0)
-
-def find_contour(img):
-    ret, thresh = cv2.threshold(img, 127, 255, 0)
-    contours, hiearchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    return contours
-
-import os
+import torch
+import torchvision
 import numpy as np
-from tensorflow.keras.preprocessing.image import ImageDataGenerator, img_to_array, load_img
+from torch.utils.data import Dataset
 import matplotlib.pyplot as plt
-from sklearn.utils import shuffle
+from matplotlib.patches import Rectangle
+from torch.utils.data import DataLoader
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
-# Data augmentation settings
-datagen = ImageDataGenerator(
-    rotation_range=3,
-    width_shift_range=0.05,
-    height_shift_range=0.05,
-    shear_range=0.05,
-    zoom_range=0.05,
-    fill_mode='nearest'
-)
+class_name = {
+    1: 'Gun',
+    2: 'Knife',
+    3: 'Pliers',
+    4: 'Scissors',
+    5: 'Wrench'
+}
 
-def augment_images(data_dir, label, augment_count=500):
-    label_path = os.path.join(data_dir, 'train', str(label))
-    augmented_dir = os.path.join(label_path, 'augmented')
-    os.makedirs(augmented_dir, exist_ok=True)
+NUM_CLASSES = len(class_name) + 1
 
-    img_names = os.listdir(label_path)
-    img_names = [name for name in img_names if os.path.isfile(os.path.join(label_path, name))]
-    generated_count = 0
+def load_from_directory(path):
+    if os.path.isfile(path+'/annot.csv'):
+        df = pd.read_csv(path+'/annot.csv')
+        print(f"Loaded {path+'/annot.csv'}")
+    else:
+        df = pd.DataFrame(columns=['img', 'xml'])
+        flist = glob(path+'/*.jpg')
 
-    while generated_count < augment_count:
-        img_name = np.random.choice(img_names)
-        img_path = os.path.join(label_path, img_name)
-        try:
-            img = load_img(img_path, color_mode='grayscale', target_size=(128, 128))
-            img = img_to_array(img)
-            img = img.reshape((1,) + img.shape)
+        for i, img in tqdm(enumerate(flist), total=len(flist), desc=f'Loading data from {path}...'):
+            xml = img[:-3] + 'xml'
+            df.loc[i] = [img, xml]
 
-            for batch in datagen.flow(img, batch_size=1, save_to_dir=augmented_dir, save_prefix='aug', save_format='png'):
-                generated_count += 1
-                break  # 한 장만 생성하고 반복문 탈출
-        except PermissionError:
-            print(f"Permission denied: Unable to access file {img_path}")
-        except Exception as e:
-            print(f"Error processing file {img_path}: {e}")
+        df.to_csv(path+'/annot.csv', index=False)
 
-# Augment images in label 4
-# data_dir = path+'/osteoarthritis/train/'  # 적절한 데이터 디렉토리로 변경
-augment_images(data_dir, 4)
+    return df
 
-# Display augmented images
-augmented_img_paths = os.listdir(os.path.join(data_dir, 'train', '4', 'augmented'))
-augmented_img_paths = shuffle(augmented_img_paths)[:6]  # 무작위로 6개 선택
+train_df = load_from_directory('./ugku-2/train')
+valid_df = load_from_directory('./ugku-2/valid')
+test_df  = load_from_directory('./ugku-2/test')
 
-for i, img_name in enumerate(augmented_img_paths):
-    img_path = os.path.join(data_dir, 'train', '4', 'augmented', img_name)
-    img = load_img(img_path, color_mode='grayscale', target_size=(128, 128))
-    plt.imshow(img, cmap='gray')
-    plt.title(f'Augmented Image {i + 1}')
+class Data_Structure(Dataset):
+    def __init__(self, dataframe):
+        self.dataframe = dataframe
+        self.image_ids = self.dataframe.index
+
+    def __len__(self):
+        return len(self.image_ids)
+
+    def __getitem__(self, idx):
+        image_id = self.dataframe.index[idx]
+        fname, xml = self.dataframe.loc[idx]
+
+        image = cv2.imread(fname, cv2.IMREAD_COLOR)[:,:,::-1].copy()
+
+        image = cv2.resize(image, (512, 512), cv2.INTER_LINEAR) / 255.
+
+        # XML annotation 불러오기 및 dict타입 구성
+        with open(xml, 'r') as f:
+            annot = xmd.parse(f.read())['annotation']
+
+        width, height = int(annot['size']['width']), int(annot['size']['height'])
+        boxes = []
+        labels = []
+        areas = []
+
+        # 여러 개의 object를 처리
+        objects = annot['object']
+        if not isinstance(objects, list):
+            objects = [objects]
+
+        for obj in objects:
+            object_class_name = obj['name']
+            object_class = [k for k, v in class_name.items() if v == object_class_name][0]  # 클래스 이름에서 번호로 매핑
+
+            xmin, xmax, ymin, ymax = [int(obj['bndbox'][value]) for value in obj['bndbox']]
+
+            # Bounding box normalization => 0~1
+            box = np.array([[xmin, ymin, xmax, ymax]], dtype=np.float32)
+            bbox_w, bbox_h = box[0, 2] - box[0, 0], box[0, 3] - box[0, 1]
+            box[0, ::2] = box[0, ::2] / width * 512
+            box[0, 1::2] = box[0, 1::2] / height * 512
+
+            boxes.append(box[0])
+            labels.append(object_class)
+            areas.append(bbox_w * bbox_h)
+
+        boxes = np.array(boxes, dtype=np.float32)
+        labels = np.array(labels, dtype=np.int64)
+        areas = np.array(areas, dtype=np.float32)
+
+         # 학습용 레이블 데이터 생성
+        target = {
+            'image_id': torch.as_tensor(image_id),
+
+            # Bounding box 좌표 구성은 numpy array -> (Number, xmin, ymin, xmax, ymax)
+            # 데이터셋에서 탐지할 object 수에 맞춰서 수정 -> (N, xmin, ymin, xmax, ymax) -> N: 탐지 객체 수
+            'boxes': torch.from_numpy(boxes),
+
+            # 레이블 클래스 부여
+            # 이미지에 탐지 객체의 레이블이 여러 개 존재할 경우 여러 값 작성 -> [1, 3, 2], [1, 1, 1]...
+            'labels': torch.as_tensor(labels),
+            'area': torch.as_tensor(areas),
+            'iscrowd': torch.from_numpy(np.zeros(len(boxes)))
+        }
+
+        return (
+            torch.from_numpy(image).float().permute(2, 0, 1),  # 순서 변경 -> (channel, horizontal, vertical)
+            target
+        )
+
+TRAIN_DATA = Data_Structure(train_df)
+VAL_DATA = Data_Structure(valid_df)
+
+print(TRAIN_DATA[0])
+'''
+print(TRAIN_DATA[0]) 출력
+(tensor([[[1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          ...,
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.]],
+ 
+         [[1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          ...,
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.]],
+ 
+         [[1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          ...,
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.],
+          [1., 1., 1.,  ..., 1., 1., 1.]]]),
+ {'image_id': tensor(0),
+  'boxes': tensor([[143.8202, 237.9419, 444.2447, 491.8174],
+          [124.0050, 343.1037, 395.6654, 501.3776]]),
+  'labels': tensor([2, 2]),
+  'area': tensor([112330.,  63325.]),
+  'iscrowd': tensor([0., 0.], dtype=torch.float64)})
+'''
+def Preview(data, class_name, model=None, device='cuda', iou_threshold=0.5, score_threshold=0):
+    plt.figure(figsize=(12,12))
+    plt.imshow(data[0].permute(1,2,0).numpy())
+    ax = plt.gca()
+    for i, box in enumerate(data[1]['boxes']):
+        x1, y1, x2, y2 = box
+        ground_truth = Rectangle(
+                            (x1, y1),
+                            x2 - x1, y2 - y1,
+                            edgecolor='blue',
+                            linewidth=3,
+                            fill=False )
+        ax.add_patch(ground_truth)
+        plt.text(x1, y1 - 10, f'[Ground Truth]: {class_name[data[1]["labels"][i].item()]}', color='blue', fontsize=12)
+
+    if model is not None:
+        model.eval()
+        with torch.no_grad():
+            rtn = model(torch.unsqueeze(data[0], 0).to(device))  # 차원 확장
+        class_pred = rtn[0]['labels'].detach().cpu()
+        bbox = rtn[0]['boxes'].detach().cpu()
+        scores = rtn[0]['scores'].detach().cpu()
+        get = torchvision.ops.nms(boxes=bbox, scores=scores, iou_threshold=iou_threshold)
+        for i, pred in enumerate(class_pred):
+            if i not in get: continue
+            if scores[i] < score_threshold: continue
+
+            x1, y1, x2, y2 = bbox[i]
+            prediction = Rectangle(
+                                (x1, y1), x2 - x1, y2 - y1,
+                                edgecolor='red', linewidth=3, fill=False )
+            ax.add_patch(prediction)
+            plt.text(x1, y1 - 10, f'[Prediction]: {class_name[pred.item()]} - {scores[i]:.4f}', color='red', fontsize=12)
     plt.show()
 
-def load_data(data_dir):
-    images = []
-    for img_name in os.listdir(data_dir):
-        img_path = os.path.join(data_dir, img_name)
-        if os.path.isfile(img_path):  # 파일인지 확인
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            if img is not None:  # 이미지가 정상적으로 로드되었는지 확인
-                img = resize_image(img)
-                img = clahe_image(img)
-                img = normalize_img(img)
-                images.append(img)
-    prepared_data = np.array(images)
-    return prepared_data
+BATCH_SIZE = 8
+NUM_WORKERS = 8
 
-def load_and_augment_data(data_dir, label):
-    label_path = os.path.join(data_dir, 'train', str(label))
-    augmented_dir = os.path.join(label_path, 'augmented')
+def collate_fn(batch):
+    return tuple(zip(*batch)) # 다양한 크기의 shape를 다루기 위해 조정
 
-    images = []
-    # Load original images
-    for img_name in os.listdir(label_path):
-        if img_name.endswith('.png'):
-            img_path = os.path.join(label_path, img_name)
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                img = resize_image(img)
-                img = clahe_image(img)
-                img = normalize_img(img)
-                images.append(img)
-    
-    # Load augmented images
-    if os.path.exists(augmented_dir):
-        for img_name in os.listdir(augmented_dir):
-            img_path = os.path.join(augmented_dir, img_name)
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            if img is not None:
-                img = resize_image(img)
-                img = clahe_image(img)
-                img = normalize_img(img)
-                images.append(img)
-    
-    return np.array(images)
+train_loader = DataLoader(TRAIN_DATA,
+                          batch_size=BATCH_SIZE,
+                          shuffle=True,
+                          num_workers=NUM_WORKERS,
+                          collate_fn=collate_fn)
 
+val_loader = DataLoader(VAL_DATA,
+                        batch_size=4,
+                        shuffle=False,
+                        num_workers=NUM_WORKERS,
+                        collate_fn=collate_fn)
 
-# 각 카테고리와 라벨에 따라 이미지를 처리
-all_data = {}
-for category in categories:
-    category_path = os.path.join(data_dir, category)
-    all_data[category] = {}
-    for label in range(5):
-        if category == 'train' and label == 4:
-            processed_img_list = load_and_augment_data(data_dir, label)
-        else:
-            label_path = os.path.join(category_path, str(label))
-            if os.path.isdir(label_path):
-                processed_img_list = load_data(label_path)
-            else:
-                processed_img_list = np.array([])
-        all_data[category][label] = processed_img_list
+device = torch.device( 'cuda' if torch.cuda.is_available() else 'cpu' )
 
-# Function to sample 500 images from each label for training
-def sample_images(data, num_samples=500):
-    sampled_data = []
-    sampled_labels = []
-    for label, images in data.items():
-        if len(images) >= num_samples:
-            sampled_data.append(images[:num_samples])
-            sampled_labels.append(np.full(num_samples, label))
-        else:
-            sampled_data.append(images)
-            sampled_labels.append(np.full(len(images), label))
-    sampled_data = np.concatenate(sampled_data, axis=0)
-    sampled_labels = np.concatenate(sampled_labels, axis=0)
-    return shuffle(sampled_data, sampled_labels)
+model = torchvision.models.detection.fasterrcnn_resnet50_fpn_v2(weights=None, min_size=512, max_size=512)
 
-# Sample 500 images from each label for training
-train_data_sampled, train_labels_sampled = sample_images(all_data['train'])
+in_features = model.roi_heads.box_predictor.cls_score.in_features
+print(in_features) # 1024
+model = model.to(device)
 
-import numpy as np
-from sklearn.model_selection import train_test_split
-import torch
-from torch.utils.data import DataLoader, TensorDataset
+import sys
+sys.path.append('./torch_ref/torchvision_ref') # 경로 추가
+import torch_ref.torchvision_ref.engine as engine
 
-# Combine validation and test sets without sampling
-val_data_combined = []
-val_labels_combined = []
-test_data_combined = []
-test_labels_combined = []
+# Params: 가중치 업데이트
+params = [p for p in model.parameters() if p.requires_grad]
 
-for dataset in ['val', 'test']:
-    for label, images in all_data[dataset].items():
-        if dataset == 'val':
-            val_data_combined.append(images)
-            val_labels_combined.append(np.full(images.shape[0], label))
-        else:
-            test_data_combined.append(images)
-            test_labels_combined.append(np.full(images.shape[0], label))
+# SGD Optimizer
+optimizer = torch.optim.SGD(params, lr=0.01, weight_decay=0.0005)
 
-val_data_combined = np.concatenate(val_data_combined, axis=0)
-val_labels_combined = np.concatenate(val_labels_combined, axis=0)
-test_data_combined = np.concatenate(test_data_combined, axis=0)
-test_labels_combined = np.concatenate(test_labels_combined, axis=0)
+# lr_scheduler로 현재 learning rate를 3에폭 마다 95%로 감소
+lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.95)
 
-# PyTorch 텐서로 변환
-train_data_tensor = torch.tensor(train_data_sampled, dtype=torch.float32)
-train_labels_tensor = torch.tensor(train_labels_sampled, dtype=torch.long)
-val_data_tensor = torch.tensor(val_data_combined, dtype=torch.float32)
-val_labels_tensor = torch.tensor(val_labels_combined, dtype=torch.long)
-test_data_tensor = torch.tensor(test_data_combined, dtype=torch.float32)
-test_labels_tensor = torch.tensor(test_labels_combined, dtype=torch.long)
+num_epochs = 3
 
-# PyTorch 데이터셋 및 데이터 로더 생성
-train_dataset = TensorDataset(train_data_tensor, train_labels_tensor)
-val_dataset = TensorDataset(val_data_tensor, val_labels_tensor)
-test_dataset = TensorDataset(test_data_tensor, test_labels_tensor)
+for epoch in range(num_epochs):
+    engine.train_one_epoch(model, optimizer, train_loader, 'cuda', epoch, print_freq=50)
 
-train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
+    # lr_scheduler 실행
+    lr_scheduler.step()
+
+    engine.evaluate(model, val_loader, device='cuda')
+    torch.save(model.state_dict(), f"./last_epoch_model.pth")

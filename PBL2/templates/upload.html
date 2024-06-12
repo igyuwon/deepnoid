@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Upload Image</title>
+</head>
+<body>
+    <h1>Upload an Image for Prediction</h1>
+    <form action="/predict" method="post" enctype="multipart/form-data">
+        <input type="file" name="file">
+        <input type="submit" value="Upload">
+    </form>
+    {% if image_url %}
+        <h2>Prediction Result:</h2>
+        <img src="{{ image_url }}" alt="Predicted Image">
+    {% endif %}
+</body>
+</html>
