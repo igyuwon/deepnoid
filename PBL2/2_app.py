@@ -14,7 +14,9 @@ from torchvision.models import ResNet50_Weights
 
 def get_model_instance_segmentation(num_classes):
     weights_backbone = ResNet50_Weights.IMAGENET1K_V1
-    model = fasterrcnn_resnet50_fpn_v2(weights=None, num_classes=91, weights_backbone=weights_backbone)
+    model = fasterrcnn_resnet50_fpn_v2(weights=None, weights_backbone=weights_backbone)  # Not specifying num_classes here
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
     return model
 
 # 클래스 이름
@@ -31,14 +33,9 @@ num_classes = len(class_names) + 1  # 배경 클래스를 포함하기 위해 +1
 model = get_model_instance_segmentation(num_classes)
 
 # Load the trained model weights
-checkpoint = torch.load('C:/workspace/deepnoid/deepnoid/PBL2/last_30epoch_model.pth', map_location=torch.device('cuda'))
-model.load_state_dict(checkpoint)
+checkpoint = torch.load('C:/workspace/deepnoid/deepnoid/PBL2/10ep_detection_model.pth', map_location=torch.device('cuda'))
+model.load_state_dict(checkpoint, strict=False)  # Load state dict with strict=False to ignore non-matching keys
 
-# Get the number of input features for the classifier
-in_features = model.roi_heads.box_predictor.cls_score.in_features
-
-# Replace the pre-trained head with a new one
-model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 model.eval()
 
 # 이미지 변환 함수
@@ -69,7 +66,7 @@ def predict():
     font_path = os.path.join(os.path.dirname(__file__), "fonts", "arial.ttf")
     font = ImageFont.truetype(font_path, 20)  # 글꼴 및 크기 설정
     for box, score, label in zip(prediction[0]['boxes'], prediction[0]['scores'], prediction[0]['labels']):
-        if score >= 0.45:  # 신뢰도 점수가 0.9 이상인 경우만 그리기
+        if score >= 0.9:  # 신뢰도 점수가 0.9 이상인 경우만 그리기
             box = [int(b) for b in box.tolist()]
             draw.rectangle(box, outline="red", width=3)
             # 텍스트 박스 배경
