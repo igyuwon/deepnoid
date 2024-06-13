@@ -1,4 +1,8 @@
 PBL2/ugku-2
-PBL2/last_30epoch_model.pth
-PBL2/last_5epoch_model.pth
-PBL2/10ep_detection_model.pth
+PBL2/pth/last_30epoch_model.pth
+PBL2/pth/last_5epoch_model.pth
+PBL2/pth/10ep_detection_model.pth
+PBL2/pth/one_last_epoch_model.pth
+PBL2/pth/final_detention_model.pth
+PBL2/pth/one_class_detect_model.pth
+PBL2/knife
