@@ -66,7 +66,7 @@ def predict():
     font_path = os.path.join(os.path.dirname(__file__), "fonts", "arial.ttf")
     font = ImageFont.truetype(font_path, 20)  # 글꼴 및 크기 설정
     for box, score, label in zip(prediction[0]['boxes'], prediction[0]['scores'], prediction[0]['labels']):
-        if score >= 0.8:  # 신뢰도 점수가 0.9 이상인 경우만 그리기
+        if score >= 0.9:  # 신뢰도 점수가 0.9 이상인 경우만 그리기
             box = [int(b) for b in box.tolist()]
             draw.rectangle(box, outline="red", width=3)
             # 텍스트 박스 배경
